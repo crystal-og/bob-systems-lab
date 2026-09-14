@@ -6,7 +6,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#0b1018" />
-  <title>Bob: Ghost Hunter — Systems Lab v0.3</title>
+  <title>Bob: Ghost Hunter — Systems Lab v0.3.1</title>
   <style>
     html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#080c12}
     body{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;touch-action:none;overscroll-behavior:none}
@@ -28,9 +28,9 @@
 'use strict';
 
 const W=384,H=216,WORLD_W=2100,WORLD_H=260,FLOOR_Y=195,ROOM_W=420;
-const SAVE_VERSION=3;
-const SAVE_KEY='bobSystemsLab_v03';
-const BACKUP_KEY='bobSystemsLab_v03_backup';
+const SAVE_VERSION=4;
+const SAVE_KEY='bobSystemsLab_v031';
+const BACKUP_KEY='bobSystemsLab_v031_backup';
 const FLOOR_HP={1:100,2:150};
 const BROCCOLI_HEAL={1:30,2:45};
 const MOVE=Object.freeze({NORMAL_MAX:130,BOOTS_MAX:182,GROUND_ACCEL:900,GROUND_DECEL:1150,REVERSE_ACCEL:1250,AIR_ACCEL:650,GRAVITY:1200,JUMP_V:-420,SHORT_CUTOFF:-190,FALL_MAX:500,COYOTE_MS:110,BUFFER_MS:120,BODY_W:16,BODY_H:28,STOMP_BOUNCE:-250});
@@ -80,7 +80,7 @@ class SystemsLab extends Phaser.Scene{
     this.createTouchUI();this.createHUD();this.createDevUI();this.keys=this.input.keyboard.addKeys({left:'LEFT',leftA:'A',right:'RIGHT',rightD:'D',jump:'SPACE',jumpZ:'Z',action:'X',wand:'C',reset:'R'});
     this.input.on('pointerdown',()=>this.ensureAudio());
     this.loadFloor(activeSession().floor,true);
-    this.message('SYSTEMS LAB v0.3 — STORY/RUN/SAVE RULES',1800);
+    this.message('SYSTEMS LAB v0.3.1 — STORY/RUN/SAVE RULES',1800);
   }
   makeTextures(){
     if(this.textures.exists('bob'))return;let g=this.make.graphics({add:false});
@@ -175,8 +175,8 @@ class SystemsLab extends Phaser.Scene{
   swingMachete(){if(this.time.now<this.attackCooldownUntil)return;this.attackCooldownUntil=this.time.now+COMBAT.MACHETE_COOLDOWN;const d=this.lastFacing,cx=this.player.x+d*(COMBAT.MACHETE_REACH*.55+8),cy=this.player.y-1;const slash=this.add.rectangle(cx,cy,30,5,0xe8edf3,.85).setAngle(d>0?-25:25).setDepth(22);this.tweens.add({targets:slash,angle:d>0?35:-35,alpha:0,duration:130,onComplete:()=>slash.destroy()});this.targets.getChildren().forEach(t=>{if(!t.active||!t.body.enable)return;const left=cx-COMBAT.MACHETE_REACH/2,right=cx+COMBAT.MACHETE_REACH/2,top=cy-COMBAT.MACHETE_HEIGHT/2,bottom=cy+COMBAT.MACHETE_HEIGHT/2;if(!(t.body.right<=left||t.body.left>=right||t.body.bottom<=top||t.body.top>=bottom))this.damageTarget(t,COMBAT.MACHETE_DAMAGE)});this.tone(245,.05,.02,'sawtooth')}
   useWand(){const run=activeRun();if(!run.hasWand)return;const view=this.cameras.main.worldView,targets=this.targets.getChildren().filter(t=>t.active&&t.x>=view.x&&t.x<=view.right);if(!targets.length){this.message('WAND: NO TARGET ON SCREEN',500);return}run.hasWand=false;this.cameras.main.flash(140,245,245,255,false);this.cameras.main.shake(100,.006);targets.forEach(t=>{const amt=Math.round(t.getData('maxHp')*COMBAT.WAND_BOSS_FRACTION);this.lightningAt(t.x,t.y);this.damageTarget(t,amt)});this.message('WAND CONSUMED FOR THIS RUN',900);writeStored()}
   lightningAt(x,y){const pts=[{x,y:y-100},{x:x-4,y:y-78},{x:x+5,y:y-57},{x:x-3,y:y-36},{x,y:y-12}];const g=this.add.graphics().setDepth(35);g.lineStyle(5,0x9c86ff,.28);g.beginPath();g.moveTo(pts[0].x,pts[0].y);pts.slice(1).forEach(p=>g.lineTo(p.x,p.y));g.strokePath();g.lineStyle(2,0xffffff,1);g.beginPath();g.moveTo(pts[0].x,pts[0].y);pts.slice(1).forEach(p=>g.lineTo(p.x,p.y));g.strokePath();this.tweens.add({targets:g,alpha:0,duration:260,onComplete:()=>g.destroy()})}
-  handleCheckpoints(){const pb=this.player.body;for(const c of this.checkpoints){if(Phaser.Geom.Intersects.RectangleToRectangle(new Phaser.Geom.Rectangle(pb.x,pb.y,pb.width,pb.height),new Phaser.Geom.Rectangle(c.body.x,c.body.y,c.body.width,c.body.height)))this.activateCheckpoint(c)}}
-  handleDamagePads(now){for(const p of this.damagePads){const b=p.body;if(pbOverlap(this.player.body,b)&&now>=this.padNextDamage){this.padNextDamage=now+1050;this.damageBob(p.damage,p.visual.x);break}}}
+  handleCheckpoints(){const pb=this.player.body;for(const c of this.checkpoints){const cb=c.body&&c.body.body?c.body.body:null;if(cb&&pbOverlap(pb,cb))this.activateCheckpoint(c)}}
+  handleDamagePads(now){for(const p of this.damagePads){const b=p.body&&p.body.body?p.body.body:null;if(b&&pbOverlap(this.player.body,b)&&now>=this.padNextDamage){this.padNextDamage=now+1050;this.damageBob(p.damage,p.visual.x);break}}}
   handleExit(){if(this.transitioning)return;const pb=this.player.body;if(activeRun().floor===1&&this.exitZone&&pbOverlap(pbRectBody(pb),this.exitZone.body)){if(!STORE.permanent.bosses.includes('boss_f1')){this.message('FLOOR EXIT LOCKED · DEFEAT BOSS DUMMY',650);return}this.transitionFloor(2)}else if(activeRun().floor===2&&this.returnZone&&pbOverlap(pbRectBody(pb),this.returnZone.body))this.transitionFloor(1)}
   transitionFloor(next){this.transitioning=true;const run=activeRun(),sess=activeSession();run.bootsMs=0;run.floor=next;sess.floor=next;sess.hp=FLOOR_HP[next];sess.x=70;sess.y=150;sess.room=0;run.tempConsumed=[];run.checkpoint={floor:next,id:'START',order:0,x:70,weapon:run.weapon,ammo:run.ammo,consumed:[]};this.saveSession(true);this.cameras.main.fadeOut(180,8,12,18);this.time.delayedCall(200,()=>{this.loadFloor(next,false);this.cameras.main.fadeIn(180,8,12,18);this.message(`ENTERED FLOOR ${next} · FULL ${FLOOR_HP[next]} HP · ♥×${run.hearts}`,1200)})}
   updateMovement(delta,jumpPressed,jumpReleased){const dt=Math.min(delta,33.34)/1000,run=activeRun(),now=this.time.now,max=run.bootsMs>0?MOVE.BOOTS_MAX:MOVE.NORMAL_MAX;let dir=0;if(this.controls.left&&!this.controls.right)dir=-1;else if(this.controls.right&&!this.controls.left)dir=1;if(dir)this.lastFacing=dir;const grounded=this.player.body.blocked.down||this.player.body.touching.down;if(grounded)this.coyote=0;else this.coyote+=delta;if(jumpPressed)this.jumpBuffer=0;else this.jumpBuffer+=delta;let vx=this.player.body.velocity.x;if(now>=this.knockbackUntil){if(grounded){if(!dir)vx=approach(vx,0,MOVE.GROUND_DECEL*dt);else{const rev=Math.sign(vx)!==0&&Math.sign(vx)!==dir;vx=approach(vx,dir*max,(rev?MOVE.REVERSE_ACCEL:MOVE.GROUND_ACCEL)*dt)}}else if(dir)vx=approach(vx,dir*max,MOVE.AIR_ACCEL*dt);this.player.body.setVelocityX(clamp(vx,-max,max))}if(this.jumpBuffer<=MOVE.BUFFER_MS&&this.coyote<=MOVE.COYOTE_MS){this.player.body.setVelocityY(MOVE.JUMP_V);this.jumpBuffer=9999;this.coyote=9999}if(jumpReleased&&this.player.body.velocity.y<MOVE.SHORT_CUTOFF)this.player.body.setVelocityY(MOVE.SHORT_CUTOFF);if(this.player.body.velocity.y>MOVE.FALL_MAX)this.player.body.setVelocityY(MOVE.FALL_MAX);return grounded}
