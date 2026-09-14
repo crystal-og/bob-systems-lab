@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#0b1018" />
+  <title>Bob: Ghost Hunter — Systems Lab v0.3</title>
+  <style>
+    html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#080c12}
+    body{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;touch-action:none;overscroll-behavior:none}
+    #shell{position:fixed;inset:0;padding-top:env(safe-area-inset-top);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left);box-sizing:border-box;display:flex;align-items:center;justify-content:center;background:#080c12}
+    #game{width:100%;height:100%;display:flex;align-items:center;justify-content:center}
+    canvas{image-rendering:pixelated;image-rendering:crisp-edges;touch-action:none}
+    .overlay{position:fixed;inset:0;z-index:50;display:none;align-items:center;justify-content:center;text-align:center;background:#080c12;color:#eef3f8;padding:30px;box-sizing:border-box;font-weight:800;letter-spacing:.06em}
+    .overlay .big{font-size:clamp(22px,7vw,46px);margin-bottom:14px}.overlay .small{font-size:clamp(12px,3vw,17px);opacity:.78;line-height:1.5}
+    #resumeOverlay{cursor:pointer}
+  </style>
+</head>
+<body>
+<div id="shell"><div id="game"></div></div>
+<div id="rotateOverlay" class="overlay"><div><div class="big">↻ ROTATE DEVICE</div><div class="small">Bob's Systems Lab is built for landscape play.</div></div></div>
+<div id="resumeOverlay" class="overlay"><div><div class="big">PAUSED</div><div class="small">Session saved. Tap anywhere to resume.</div></div></div>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js"></script>
+<script>
+(() => {
+'use strict';
+
+const W=384,H=216,WORLD_W=2100,WORLD_H=260,FLOOR_Y=195,ROOM_W=420;
+const SAVE_VERSION=3;
+const SAVE_KEY='bobSystemsLab_v03';
+const BACKUP_KEY='bobSystemsLab_v03_backup';
+const FLOOR_HP={1:100,2:150};
+const BROCCOLI_HEAL={1:30,2:45};
+const MOVE=Object.freeze({NORMAL_MAX:130,BOOTS_MAX:182,GROUND_ACCEL:900,GROUND_DECEL:1150,REVERSE_ACCEL:1250,AIR_ACCEL:650,GRAVITY:1200,JUMP_V:-420,SHORT_CUTOFF:-190,FALL_MAX:500,COYOTE_MS:110,BUFFER_MS:120,BODY_W:16,BODY_H:28,STOMP_BOUNCE:-250});
+const COMBAT=Object.freeze({IFRAME_MS:1000,KNOCKBACK_MS:120,KNOCKBACK_X:150,KNOCKBACK_Y:-210,GUN_DAMAGE:20,GUN_COOLDOWN:220,GUN_AMMO:20,GUN_SPEED:270,MACHETE_DAMAGE:36,MACHETE_COOLDOWN:300,MACHETE_REACH:34,MACHETE_HEIGHT:24,WAND_BOSS_FRACTION:.25,BOOTS_MS:20000});
+const clamp=Phaser.Math.Clamp;
+const approach=(v,t,d)=>v<t?Math.min(v+d,t):v>t?Math.max(v-d,t):t;
+const clone=o=>JSON.parse(JSON.stringify(o));
+
+function defaultRun(){
+  return {hearts:10,floor:1,weapon:'none',ammo:0,hasWand:false,bootsMs:0,checkpoint:{floor:1,id:'START',order:0,x:70,weapon:'none',ammo:0,consumed:[]},tempConsumed:[],runConsumed:[],boss1Defeated:false};
+}
+function defaultSession(run){return {floor:run.floor,x:70,y:150,hp:FLOOR_HP[run.floor],room:0};}
+function defaultSave(){const r=defaultRun();return {version:SAVE_VERSION,permanent:{spirits:[],records:[],unlockedFloors:[1],bosses:[]},mode:'story',storyRun:r,storySession:defaultSession(r),practiceRun:null,practiceSession:null,updatedAt:Date.now()};}
+function validateSave(s){return !!s&&s.version===SAVE_VERSION&&s.permanent&&s.storyRun&&s.storySession;}
+function safeParse(text){try{return JSON.parse(text)}catch(e){return null}}
+function loadStored(){
+  const primary=safeParse(localStorage.getItem(SAVE_KEY));
+  if(validateSave(primary)) return primary;
+  const backup=safeParse(localStorage.getItem(BACKUP_KEY));
+  if(validateSave(backup)) return backup;
+  return defaultSave();
+}
+let STORE=loadStored();
+function writeStored(){
+  try{
+    STORE.updatedAt=Date.now();
+    const old=localStorage.getItem(SAVE_KEY);
+    const parsed=safeParse(old);
+    if(validateSave(parsed)) localStorage.setItem(BACKUP_KEY,old);
+    const txt=JSON.stringify(STORE);
+    localStorage.setItem(SAVE_KEY,txt);
+    if(!localStorage.getItem(BACKUP_KEY)) localStorage.setItem(BACKUP_KEY,txt);
+  }catch(e){}
+}
+function activeRun(){return STORE.mode==='practice'?STORE.practiceRun:STORE.storyRun}
+function activeSession(){return STORE.mode==='practice'?STORE.practiceSession:STORE.storySession}
+function setActiveSession(v){if(STORE.mode==='practice')STORE.practiceSession=v;else STORE.storySession=v}
+
+class SystemsLab extends Phaser.Scene{
+  constructor(){super('SystemsLab');this.controls={left:false,right:false,jump:false,action:false,wand:false};this.prev={jump:false,action:false,wand:false};this.coyote=9999;this.jumpBuffer=9999;this.lastFacing=1;this.invulnUntil=0;this.knockbackUntil=0;this.attackCooldownUntil=0;this.padNextDamage=0;this.messageUntil=0;this.audioCtx=null;this.currentRoom=-1;this.transitioning=false;this.lastSaveAt=0;}
+  create(){
+    this.physics.world.setBounds(0,0,WORLD_W,WORLD_H);this.cameras.main.setBounds(0,0,WORLD_W,WORLD_H);this.physics.world.gravity.y=MOVE.GRAVITY;this.input.addPointer(5);
+    this.makeTextures();this.buildStaticBackground();
+    this.solids=this.physics.add.staticGroup();this.pickups=this.physics.add.group({allowGravity:false,immovable:true});this.bullets=this.physics.add.group({allowGravity:false});this.targets=this.physics.add.group();this.checkpoints=[];this.damagePads=[];
+    this.player=this.physics.add.sprite(70,150,'bob');this.player.setDepth(10);this.player.body.setSize(MOVE.BODY_W,MOVE.BODY_H);this.player.body.setOffset(4,4);this.player.body.setMaxVelocity(MOVE.BOOTS_MAX,MOVE.FALL_MAX);
+    this.physics.add.collider(this.player,this.solids);this.physics.add.collider(this.bullets,this.solids,b=>b.destroy());this.physics.add.overlap(this.player,this.pickups,this.onPickup,undefined,this);this.physics.add.overlap(this.bullets,this.targets,this.onBulletTarget,undefined,this);
+    this.createTouchUI();this.createHUD();this.createDevUI();this.keys=this.input.keyboard.addKeys({left:'LEFT',leftA:'A',right:'RIGHT',rightD:'D',jump:'SPACE',jumpZ:'Z',action:'X',wand:'C',reset:'R'});
+    this.input.on('pointerdown',()=>this.ensureAudio());
+    this.loadFloor(activeSession().floor,true);
+    this.message('SYSTEMS LAB v0.3 — STORY/RUN/SAVE RULES',1800);
+  }
+  makeTextures(){
+    if(this.textures.exists('bob'))return;let g=this.make.graphics({add:false});
+    g.fillStyle(0x2d394b).fillRect(4,14,16,15);g.fillStyle(0x6f4a30).fillRect(5,0,14,6);g.fillStyle(0xd8ad7d).fillRect(6,5,12,10);g.fillStyle(0x101820).fillRect(8,8,2,2).fillRect(14,8,2,2);g.fillStyle(0x16202c).fillRect(3,14,4,12);g.fillStyle(0x1a2230).fillRect(5,28,5,4).fillRect(14,28,5,4);g.generateTexture('bob',24,32);g.destroy();
+    const tex=(name,w,h,draw)=>{let q=this.make.graphics({add:false});draw(q);q.generateTexture(name,w,h);q.destroy();};
+    tex('gun',18,13,q=>{q.fillStyle(0x6ed7ef).fillRect(1,4,16,5);q.fillStyle(0xd7f8ff).fillRect(14,2,4,3);q.fillStyle(0x46576d).fillRect(3,9,5,4)});
+    tex('machete',18,13,q=>{q.fillStyle(0xe6e8ef).fillTriangle(1,4,17,1,7,7);q.fillStyle(0x9a6b3f).fillRect(5,6,4,7)});
+    tex('wand',13,18,q=>{q.fillStyle(0xe7dcff).fillRect(5,1,3,15);q.fillStyle(0xb28cff).fillCircle(6,3,4);q.fillStyle(0xf7f0ff).fillCircle(6,3,2)});
+    tex('broccoli',16,16,q=>{q.fillStyle(0x65c94e).fillCircle(5,5,4).fillCircle(10,5,4).fillCircle(8,3,4);q.fillStyle(0x3e983b).fillRect(6,7,4,8)});
+    tex('bigbroccoli',22,22,q=>{q.fillStyle(0x6ed458).fillCircle(6,7,6).fillCircle(15,7,6).fillCircle(11,4,6);q.fillStyle(0x3f9b3d).fillRect(8,10,6,11)});
+    tex('boots',18,14,q=>{q.fillStyle(0xdff7ff).fillRect(2,4,6,8).fillRect(10,4,6,8);q.fillStyle(0x7ed7ef).fillRect(0,9,8,4).fillRect(10,9,8,4)});
+    tex('heart',14,14,q=>{q.fillStyle(0xff6678).fillCircle(4,4,4).fillCircle(10,4,4).fillTriangle(1,5,13,5,7,13)});
+    tex('spirit',18,22,q=>{q.fillStyle(0xffefb0).fillCircle(9,7,6);q.fillStyle(0xf5d982).fillTriangle(4,10,9,21,14,10);q.fillStyle(0x604f39).fillRect(6,6,2,2).fillRect(11,6,2,2)});
+    tex('record',16,18,q=>{q.fillStyle(0xd8c59a).fillRect(2,1,12,16);q.fillStyle(0x7f674a).fillRect(4,4,8,1).fillRect(4,7,7,1).fillRect(4,10,8,1)});
+    tex('bullet',7,4,q=>{q.fillStyle(0x9df2ff).fillRect(0,1,7,2);q.fillStyle(0xffffff).fillRect(5,0,2,4)});
+    tex('dummy',34,42,q=>{q.fillStyle(0x6c4c88).fillRoundedRect(3,3,28,34,8);q.fillStyle(0xb991db).fillRect(8,10,5,5).fillRect(21,10,5,5);q.fillStyle(0x342544).fillTriangle(6,33,12,42,17,33).fillTriangle(17,33,23,42,29,33)});
+  }
+  buildStaticBackground(){this.add.rectangle(WORLD_W/2,H/2,WORLD_W,H,0x111a25).setDepth(-10);for(let i=0;i<5;i++){this.add.rectangle(i*ROOM_W+ROOM_W/2,134,ROOM_W-6,118,i%2?0x162130:0x141e2b).setDepth(-9);this.add.text(i*ROOM_W+14,77,`ROOM ${i+1}`,{fontFamily:'monospace',fontSize:'8px',color:'#6f879f'}).setDepth(-8)}}
+  clearFloorObjects(){this.solids.clear(true,true);this.pickups.clear(true,true);this.targets.clear(true,true);this.bullets.clear(true,true);this.checkpoints.forEach(c=>{c.visual.destroy();c.label.destroy();c.body.destroy()});this.checkpoints=[];this.damagePads.forEach(p=>{p.visual.destroy();p.body.destroy()});this.damagePads=[];if(this.exitZone){this.exitZone.destroy();this.exitZone=null}if(this.returnZone){this.returnZone.destroy();this.returnZone=null}if(this.floorTexts)this.floorTexts.forEach(t=>t.destroy());this.floorTexts=[];this.bossDummy=null;this.bossHpText=null;}
+  floorLabel(x,y,text,color='#e9f2ff',size=8){const t=this.add.text(x,y,text,{fontFamily:'monospace',fontSize:`${size}px`,color,backgroundColor:'#0d141ecc',padding:{x:3,y:2}}).setDepth(4);this.floorTexts.push(t);return t;}
+  addSolid(x,y,w,h){const r=this.add.rectangle(x,y,w,h,0x354458,1);this.physics.add.existing(r,true);this.solids.add(r);return r;}
+  loadFloor(floor,fromSave=false){
+    this.clearFloorObjects();const run=activeRun(),sess=activeSession();run.floor=floor;sess.floor=floor;this.physics.world.setBounds(0,0,WORLD_W,WORLD_H);this.cameras.main.setBounds(0,0,WORLD_W,WORLD_H);
+    this.addSolid(WORLD_W/2,210,WORLD_W,30);for(let i=1;i<5;i++)this.add.rectangle(i*ROOM_W,134,3,118,0x253346,.7).setDepth(-5);
+    if(floor===1)this.buildFloor1();else this.buildFloor2();
+    let x=fromSave?sess.x:70,y=fromSave?sess.y:150;if(!Number.isFinite(x)||x<20||x>WORLD_W-20){x=70;y=150}
+    this.player.body.reset(x,y);this.player.setPosition(x,y);this.player.setVelocity(0,0);this.currentRoom=clamp(Math.floor(x/ROOM_W),0,4);this.cameras.main.scrollX=clamp(x-90,0,WORLD_W-W);this.cameras.main.scrollY=0;this.invulnUntil=this.time.now+450;this.transitioning=false;this.syncCheckpointVisuals();this.saveSession(true);
+  }
+  buildFloor1(){
+    this.floorLabel(14,62,'SIMULATED FLOOR 1 — GRAND FOYER · 100 MAX HP','#a9d8ff',9);
+    this.floorLabel(20,100,'WEAPON PICKUPS');this.createPickup(180,178,'gun','gun','f1_gun');this.createPickup(290,178,'machete','machete','f1_mach');
+    this.createDamagePad(515,48,20);this.floorLabel(480,150,'DAMAGE PAD · 20 HP','#ffb3bd');this.createCheckpoint(735,'CP1',1,false);
+    this.createPickup(945,175,'wand','wand','f1_wand',true);this.createPickup(1040,175,'spirit','spirit','spirit_f1',true);this.createPickup(1125,175,'record','record','record_f1',true);this.createCheckpoint(1225,'CP2',2,false);
+    this.createPickup(1395,178,'boots','boots','f1_boots');this.createPickup(1490,178,'broccoli','broccoli','f1_broc');this.createPickup(1580,178,'heart','extraheart','f1_heart',true);this.createDamagePad(1640,48,20);
+    this.createCheckpoint(1740,'BOSS',3,true);this.createBossDummy(1900);this.floorLabel(1830,105,'BOSS DUMMY','#d7b6ff',9);this.exitZone=this.add.rectangle(2040,160,34,68,0x7dc8ff,.18).setStrokeStyle(2,0x9ee8ff,.8).setDepth(2);this.physics.add.existing(this.exitZone,true);this.floorLabel(1990,110,'FLOOR EXIT','#a9e9ff');
+  }
+  buildFloor2(){
+    this.floorLabel(14,62,'SIMULATED FLOOR 2 — PORTRAIT HALL · 150 MAX HP','#d9b4ff',9);this.floorLabel(20,100,'HP SHOULD BE 150 / 150');
+    this.createPickup(220,178,'broccoli','broccoli','f2_broc');this.floorLabel(170,145,'BROCCOLI +45','#bff59d');
+    this.createPickup(430,175,'bigbroccoli','bigbroccoli','f2_bigbroc');this.floorLabel(355,135,'BIG BROCCOLI SIMULATION +115\n(FLOORS 4–5 SYSTEM TEST)','#bff59d',7);
+    this.createCheckpoint(760,'CP1',1,false);this.createDamagePad(940,48,20);this.createPickup(1110,178,'gun','gun','f2_gun');this.createPickup(1230,178,'boots','boots','f2_boots');this.createCheckpoint(1420,'CP2',2,false);
+    this.floorLabel(1540,118,'SAVE / RELOAD TEST ZONE','#ffe6a3',8);this.floorLabel(1540,139,'TAKE DAMAGE · CHANGE WEAPON · BACKGROUND APP\nTHEN RETURN OR REFRESH','#9eb4c9',7);
+    this.returnZone=this.add.rectangle(2015,160,50,68,0xffd67d,.14).setStrokeStyle(2,0xffdd91,.8).setDepth(2);this.physics.add.existing(this.returnZone,true);this.floorLabel(1950,110,'RETURN TO FLOOR 1','#ffe2a8');
+  }
+  createPickup(x,y,texture,kind,id,runPersistent=false){const run=activeRun();const permanent=STORE.permanent;const permCollected=kind==='spirit'?permanent.spirits.includes(id):kind==='record'?permanent.records.includes(id):false;const consumed=runPersistent?run.runConsumed.includes(id):run.tempConsumed.includes(id);if(permCollected||consumed){if(kind==='spirit'){const rem=this.add.circle(x,y,5,0xffefb0,.18).setDepth(3);this.floorTexts.push(rem)}return null}const p=this.physics.add.sprite(x,y,texture).setDepth(6);p.body.setAllowGravity(false);p.setImmovable(true);p.setData('kind',kind);p.setData('id',id);p.setData('runPersistent',runPersistent);this.pickups.add(p);return p;}
+  createCheckpoint(x,id,order,boss){const visual=this.add.rectangle(x,166,14,42,0x4c78a8,.85).setDepth(4).setStrokeStyle(2,0x86b9ec,.9);const label=this.add.text(x-22,126,id,{fontFamily:'monospace',fontSize:'7px',color:'#9bc7ef'}).setDepth(5);const body=this.add.rectangle(x,165,24,54,0x000000,0);this.physics.add.existing(body,true);this.checkpoints.push({x,id,order,boss,visual,label,body});}
+  syncCheckpointVisuals(){const run=activeRun();this.checkpoints.forEach(c=>{const active=run.checkpoint&&run.checkpoint.floor===run.floor&&run.checkpoint.order>=c.order;c.visual.setFillStyle(active?0xd6a94d:0x4c78a8,active?.95:.85);c.visual.setStrokeStyle(2,active?0xffe384:0x86b9ec,.95);c.label.setColor(active?'#ffe6a3':'#9bc7ef')})}
+  createDamagePad(x,w,damage){const visual=this.add.rectangle(x,191,w,7,0xa74254,.9).setDepth(3);const body=this.add.rectangle(x,187,Math.max(18,w-6),12,0x000000,0);this.physics.add.existing(body,true);this.damagePads.push({visual,body,damage});}
+  createBossDummy(x){const defeated=STORE.permanent.bosses.includes('boss_f1');if(defeated)return;const d=this.physics.add.sprite(x,174,'dummy').setDepth(7);d.body.setSize(28,36);d.body.setOffset(3,3);d.setImmovable(true);d.body.setAllowGravity(false);d.setData('hp',100);d.setData('maxHp',100);d.setData('boss',true);this.targets.add(d);this.bossDummy=d;this.bossHpText=this.add.text(x-34,118,'DUMMY HP 100/100',{fontFamily:'monospace',fontSize:'7px',color:'#d9c3ef',backgroundColor:'#0d141ecc',padding:{x:3,y:2}}).setDepth(8);this.floorTexts.push(this.bossHpText)}
+  createTouchUI(){
+    // Preserve the iPhone-validated smaller, rounded Combat Lab controls.
+    // Invisible touch zones are slightly larger than the visible art.
+    this.touchRects={
+      left:new Phaser.Geom.Rectangle(8,158,50,46),
+      right:new Phaser.Geom.Rectangle(58,158,50,46),
+      action:new Phaser.Geom.Rectangle(270,158,48,46),
+      jump:new Phaser.Geom.Rectangle(319,153,57,51),
+      wand:new Phaser.Geom.Rectangle(272,122,46,34)
+    };
+    this.visualRects={
+      left:new Phaser.Geom.Rectangle(14,166,38,32),
+      right:new Phaser.Geom.Rectangle(64,166,38,32),
+      action:new Phaser.Geom.Rectangle(276,166,36,32),
+      jump:new Phaser.Geom.Rectangle(326,161,43,38),
+      wand:new Phaser.Geom.Rectangle(278,128,34,24)
+    };
+    const btn=(rect,label,alpha=.28,size=10)=>{
+      const cx=rect.x+rect.width/2,cy=rect.y+rect.height/2,radius=Math.min(11,Math.floor(rect.height/2));
+      const r=this.add.graphics({x:cx,y:cy}).setScrollFactor(0).setDepth(1000);
+      r.fillStyle(0xe6eef8,alpha);r.fillRoundedRect(-rect.width/2,-rect.height/2,rect.width,rect.height,radius);
+      r.lineStyle(1,0xffffff,.34);r.strokeRoundedRect(-rect.width/2,-rect.height/2,rect.width,rect.height,radius);
+      const t=this.add.text(cx,cy,label,{fontFamily:'monospace',fontSize:`${size}px`,color:'#101722',fontStyle:'bold'}).setOrigin(.5).setScrollFactor(0).setDepth(1001);
+      return{r,t,alpha};
+    };
+    this.touchV={left:btn(this.visualRects.left,'◀'),right:btn(this.visualRects.right,'▶'),action:btn(this.visualRects.action,'A',.26,9),jump:btn(this.visualRects.jump,'JUMP',.32,9),wand:btn(this.visualRects.wand,'WAND',.26,7)};
+  }
+  createHUD(){this.title=this.add.text(6,5,'BOB SYSTEMS LAB v0.3',{fontFamily:'monospace',fontSize:'8px',color:'#e7edf5',backgroundColor:'#101722cc',padding:{x:3,y:2}}).setScrollFactor(0).setDepth(1004);this.hpBack=this.add.rectangle(7,25,102,7,0x17202d,.95).setOrigin(0,.5).setScrollFactor(0).setDepth(1002);this.hpFill=this.add.rectangle(9,25,98,4,0x75d56f,1).setOrigin(0,.5).setScrollFactor(0).setDepth(1003);this.hpText=this.add.text(113,19,'',{fontFamily:'monospace',fontSize:'7px',color:'#e7edf5'}).setScrollFactor(0).setDepth(1003);this.stateText=this.add.text(6,34,'',{fontFamily:'monospace',fontSize:'6px',color:'#c9d6e4',backgroundColor:'#101722bb',padding:{x:3,y:2}}).setScrollFactor(0).setDepth(1003);this.msg=this.add.text(W/2,67,'',{fontFamily:'monospace',fontSize:'8px',color:'#fff2b0',backgroundColor:'#101722e8',padding:{x:5,y:3},align:'center'}).setOrigin(.5,0).setScrollFactor(0).setDepth(1010).setVisible(false)}
+  createDevUI(){const mk=(x,y,label,cb,w=40)=>{const t=this.add.text(x,y,label,{fontFamily:'monospace',fontSize:'6px',color:'#d9e6f2',backgroundColor:'#26364acc',padding:{x:3,y:2},fixedWidth:w,align:'center'}).setScrollFactor(0).setDepth(1005).setInteractive({useHandCursor:true});t.on('pointerdown',()=>{this.ensureAudio();cb()});return t};this.dev1=mk(176,5,'HP=1',()=>{activeSession().hp=1;this.message('HP SET TO 1',600)},36);this.dev2=mk(214,5,'♥=1',()=>{activeRun().hearts=1;this.message('HEARTS SET TO 1',600)},34);this.dev3=mk(250,5,'GUN',()=>this.giveWeapon('gun'),31);this.dev4=mk(283,5,'MACH',()=>this.giveWeapon('machete'),35);this.dev5=mk(320,5,'WAND',()=>{activeRun().hasWand=true;this.message('WAND READY',600)},37);this.dev6=mk(359,5,'RST',()=>this.resetLabSave(),25);this.devPractice=mk(259,23,'PRACTICE',()=>this.togglePractice(),56);this.devCorrupt=mk(317,23,'CORRUPT',()=>this.corruptPrimary(),50);}
+  ensureAudio(){try{if(!this.audioCtx)this.audioCtx=new(window.AudioContext||window.webkitAudioContext)();if(this.audioCtx.state==='suspended')this.audioCtx.resume()}catch(e){}}
+  tone(freq=220,dur=.04,vol=.02,type='square'){if(!this.audioCtx||this.audioCtx.state!=='running')return;const o=this.audioCtx.createOscillator(),g=this.audioCtx.createGain();o.type=type;o.frequency.value=freq;g.gain.value=vol;o.connect(g);g.connect(this.audioCtx.destination);const n=this.audioCtx.currentTime;g.gain.exponentialRampToValueAtTime(.0001,n+dur);o.start(n);o.stop(n+dur)}
+  message(text,ms=900){this.msg.setText(text).setVisible(true);this.messageUntil=this.time.now+ms}
+  giveWeapon(w){const run=activeRun();run.weapon=w;run.ammo=w==='gun'?COMBAT.GUN_AMMO:0;this.message(w==='gun'?'PRIMARY: GHOST GUN 20/20':'PRIMARY: MACHETE',700);this.saveSession(true)}
+  onPickup(player,p){if(!p.active)return;const run=activeRun(),sess=activeSession(),kind=p.getData('kind'),id=p.getData('id'),rp=p.getData('runPersistent');if(kind==='gun')this.giveWeapon('gun');else if(kind==='machete')this.giveWeapon('machete');else if(kind==='wand'){if(run.hasWand){this.message('WAND SLOT ALREADY FULL',650);return}run.hasWand=true;this.message('SPECTRAL WAND ACQUIRED · PERSISTS THROUGH DEATH',900)}else if(kind==='boots'){run.bootsMs=COMBAT.BOOTS_MS;this.message('WINGED BOOTS · 20 SEC',700)}else if(kind==='broccoli'){const heal=BROCCOLI_HEAL[run.floor];if(sess.hp>=FLOOR_HP[run.floor]){this.message('HP ALREADY FULL',500);return}const before=sess.hp;sess.hp=Math.min(FLOOR_HP[run.floor],sess.hp+heal);this.message(`BROCCOLI +${sess.hp-before} HP`,700)}else if(kind==='bigbroccoli'){if(sess.hp>=FLOOR_HP[run.floor]){this.message('HP ALREADY FULL',500);return}const before=sess.hp;sess.hp=Math.min(FLOOR_HP[run.floor],sess.hp+115);this.message(`BIG BROCCOLI +${sess.hp-before} HP`,700)}else if(kind==='extraheart'){if(run.hearts>=10){this.message('HEARTS ALREADY 10/10 · PICKUP LEFT IN PLACE',800);return}run.hearts++;this.message(`EXTRA HEART · ♥×${run.hearts}`,800)}else if(kind==='spirit'){if(!STORE.permanent.spirits.includes(id))STORE.permanent.spirits.push(id);this.message('LOST SPIRIT RESCUED · PERMANENT SAVE',850)}else if(kind==='record'){if(!STORE.permanent.records.includes(id))STORE.permanent.records.push(id);this.message('MANSION RECORD FOUND · PERMANENT SAVE',850)}
+    if(kind!=='spirit'&&kind!=='record'){if(rp&&!run.runConsumed.includes(id))run.runConsumed.push(id);else if(!rp&&!run.tempConsumed.includes(id))run.tempConsumed.push(id)}p.disableBody(true,true);this.saveSession(true);writeStored();}
+  activateCheckpoint(c){const run=activeRun(),sess=activeSession();if(run.checkpoint&&run.checkpoint.floor===run.floor&&run.checkpoint.order>=c.order)return;run.checkpoint={floor:run.floor,id:c.id,order:c.order,x:c.x-34,weapon:run.weapon,ammo:run.ammo,consumed:clone(run.tempConsumed)};if(c.boss){sess.hp=FLOOR_HP[run.floor];this.message(`${c.id} CHECKPOINT · FULL HP RESTORED`,1000)}else this.message(`${c.id} CHECKPOINT ACTIVATED · NO HEAL`,900);this.syncCheckpointVisuals();this.saveSession(true);writeStored();}
+  damageBob(amount,sourceX){const now=this.time.now;if(now<this.invulnUntil||this.transitioning)return;const sess=activeSession();sess.hp=Math.max(0,sess.hp-amount);this.invulnUntil=now+COMBAT.IFRAME_MS;this.knockbackUntil=now+COMBAT.KNOCKBACK_MS;const dir=this.player.x>=sourceX?1:-1;this.player.setVelocity(dir*COMBAT.KNOCKBACK_X,COMBAT.KNOCKBACK_Y);this.cameras.main.shake(60,.004);this.tone(90,.07,.03);this.message(`BOB -${amount} HP`,450);if(sess.hp<=0)this.loseLife();else this.saveSession(false)}
+  loseLife(){const run=activeRun();run.hearts--;run.bootsMs=0;this.player.body.enable=false;this.player.setAlpha(.35);const ghost=this.add.rectangle(this.player.x,this.player.y-8,8,12,0xdafcff,.75).setDepth(30);this.tweens.add({targets:ghost,y:ghost.y-24,alpha:0,duration:420,onComplete:()=>ghost.destroy()});if(run.hearts<=0){if(STORE.mode==='practice'){this.message('PRACTICE HEARTS SPENT · RESTARTING PRACTICE FLOOR',1400);this.time.delayedCall(650,()=>{STORE.practiceRun=defaultRun();STORE.practiceRun.floor=1;STORE.practiceSession=defaultSession(STORE.practiceRun);this.loadFloor(1,false)})}else{this.message('RUN OVER · 10 HEARTS SPENT · RETURN TO FLOOR 1',1500);this.time.delayedCall(650,()=>{const nr=defaultRun();STORE.storyRun=nr;STORE.storySession=defaultSession(nr);this.loadFloor(1,false)})}}else{this.message(`HEART LOST · ${run.hearts} REMAIN`,900);this.time.delayedCall(520,()=>this.respawnAtCheckpoint())}writeStored()}
+  respawnAtCheckpoint(){const run=activeRun(),sess=activeSession(),cp=run.checkpoint||{floor:run.floor,id:'START',order:0,x:70,weapon:'none',ammo:0,consumed:[]};sess.hp=FLOOR_HP[run.floor];run.weapon=cp.weapon;run.ammo=cp.ammo;run.tempConsumed=clone(cp.consumed||[]);run.bootsMs=0;sess.x=cp.x;sess.y=150;this.loadFloor(run.floor,true);this.message(`${cp.id} RESPAWN · FULL ${FLOOR_HP[run.floor]} HP`,950)}
+  onBulletTarget(b,t){if(!b.active||!t.active)return;b.destroy();this.damageTarget(t,COMBAT.GUN_DAMAGE)}
+  damageTarget(t,amount){let hp=t.getData('hp')-amount;t.setData('hp',hp);this.bossHpText&&this.bossHpText.setText(`DUMMY HP ${Math.max(0,hp)}/${t.getData('maxHp')}`);t.setTintFill(0xffffff);this.time.delayedCall(70,()=>t.active&&t.clearTint());if(hp<=0){t.disableBody(true,true);STORE.permanent.bosses.includes('boss_f1')||STORE.permanent.bosses.push('boss_f1');STORE.permanent.unlockedFloors.includes(2)||STORE.permanent.unlockedFloors.push(2);activeRun().boss1Defeated=true;this.message('BOSS DUMMY DEFEATED · FLOOR 2 PERMANENTLY UNLOCKED',1300);writeStored()}}
+  fireGun(){const run=activeRun();if(this.time.now<this.attackCooldownUntil)return;if(run.ammo<=0){this.message('GHOST GUN EMPTY',400);return}this.attackCooldownUntil=this.time.now+COMBAT.GUN_COOLDOWN;run.ammo--;const d=this.lastFacing,b=this.bullets.create(this.player.x+d*15,this.player.y+4,'bullet');b.body.setAllowGravity(false);b.setVelocityX(d*COMBAT.GUN_SPEED);b.setData('expires',this.time.now+1200);this.tone(430,.03,.02);}
+  swingMachete(){if(this.time.now<this.attackCooldownUntil)return;this.attackCooldownUntil=this.time.now+COMBAT.MACHETE_COOLDOWN;const d=this.lastFacing,cx=this.player.x+d*(COMBAT.MACHETE_REACH*.55+8),cy=this.player.y-1;const slash=this.add.rectangle(cx,cy,30,5,0xe8edf3,.85).setAngle(d>0?-25:25).setDepth(22);this.tweens.add({targets:slash,angle:d>0?35:-35,alpha:0,duration:130,onComplete:()=>slash.destroy()});this.targets.getChildren().forEach(t=>{if(!t.active||!t.body.enable)return;const left=cx-COMBAT.MACHETE_REACH/2,right=cx+COMBAT.MACHETE_REACH/2,top=cy-COMBAT.MACHETE_HEIGHT/2,bottom=cy+COMBAT.MACHETE_HEIGHT/2;if(!(t.body.right<=left||t.body.left>=right||t.body.bottom<=top||t.body.top>=bottom))this.damageTarget(t,COMBAT.MACHETE_DAMAGE)});this.tone(245,.05,.02,'sawtooth')}
+  useWand(){const run=activeRun();if(!run.hasWand)return;const view=this.cameras.main.worldView,targets=this.targets.getChildren().filter(t=>t.active&&t.x>=view.x&&t.x<=view.right);if(!targets.length){this.message('WAND: NO TARGET ON SCREEN',500);return}run.hasWand=false;this.cameras.main.flash(140,245,245,255,false);this.cameras.main.shake(100,.006);targets.forEach(t=>{const amt=Math.round(t.getData('maxHp')*COMBAT.WAND_BOSS_FRACTION);this.lightningAt(t.x,t.y);this.damageTarget(t,amt)});this.message('WAND CONSUMED FOR THIS RUN',900);writeStored()}
+  lightningAt(x,y){const pts=[{x,y:y-100},{x:x-4,y:y-78},{x:x+5,y:y-57},{x:x-3,y:y-36},{x,y:y-12}];const g=this.add.graphics().setDepth(35);g.lineStyle(5,0x9c86ff,.28);g.beginPath();g.moveTo(pts[0].x,pts[0].y);pts.slice(1).forEach(p=>g.lineTo(p.x,p.y));g.strokePath();g.lineStyle(2,0xffffff,1);g.beginPath();g.moveTo(pts[0].x,pts[0].y);pts.slice(1).forEach(p=>g.lineTo(p.x,p.y));g.strokePath();this.tweens.add({targets:g,alpha:0,duration:260,onComplete:()=>g.destroy()})}
+  handleCheckpoints(){const pb=this.player.body;for(const c of this.checkpoints){if(Phaser.Geom.Intersects.RectangleToRectangle(new Phaser.Geom.Rectangle(pb.x,pb.y,pb.width,pb.height),new Phaser.Geom.Rectangle(c.body.x,c.body.y,c.body.width,c.body.height)))this.activateCheckpoint(c)}}
+  handleDamagePads(now){for(const p of this.damagePads){const b=p.body;if(pbOverlap(this.player.body,b)&&now>=this.padNextDamage){this.padNextDamage=now+1050;this.damageBob(p.damage,p.visual.x);break}}}
+  handleExit(){if(this.transitioning)return;const pb=this.player.body;if(activeRun().floor===1&&this.exitZone&&pbOverlap(pbRectBody(pb),this.exitZone.body)){if(!STORE.permanent.bosses.includes('boss_f1')){this.message('FLOOR EXIT LOCKED · DEFEAT BOSS DUMMY',650);return}this.transitionFloor(2)}else if(activeRun().floor===2&&this.returnZone&&pbOverlap(pbRectBody(pb),this.returnZone.body))this.transitionFloor(1)}
+  transitionFloor(next){this.transitioning=true;const run=activeRun(),sess=activeSession();run.bootsMs=0;run.floor=next;sess.floor=next;sess.hp=FLOOR_HP[next];sess.x=70;sess.y=150;sess.room=0;run.tempConsumed=[];run.checkpoint={floor:next,id:'START',order:0,x:70,weapon:run.weapon,ammo:run.ammo,consumed:[]};this.saveSession(true);this.cameras.main.fadeOut(180,8,12,18);this.time.delayedCall(200,()=>{this.loadFloor(next,false);this.cameras.main.fadeIn(180,8,12,18);this.message(`ENTERED FLOOR ${next} · FULL ${FLOOR_HP[next]} HP · ♥×${run.hearts}`,1200)})}
+  updateMovement(delta,jumpPressed,jumpReleased){const dt=Math.min(delta,33.34)/1000,run=activeRun(),now=this.time.now,max=run.bootsMs>0?MOVE.BOOTS_MAX:MOVE.NORMAL_MAX;let dir=0;if(this.controls.left&&!this.controls.right)dir=-1;else if(this.controls.right&&!this.controls.left)dir=1;if(dir)this.lastFacing=dir;const grounded=this.player.body.blocked.down||this.player.body.touching.down;if(grounded)this.coyote=0;else this.coyote+=delta;if(jumpPressed)this.jumpBuffer=0;else this.jumpBuffer+=delta;let vx=this.player.body.velocity.x;if(now>=this.knockbackUntil){if(grounded){if(!dir)vx=approach(vx,0,MOVE.GROUND_DECEL*dt);else{const rev=Math.sign(vx)!==0&&Math.sign(vx)!==dir;vx=approach(vx,dir*max,(rev?MOVE.REVERSE_ACCEL:MOVE.GROUND_ACCEL)*dt)}}else if(dir)vx=approach(vx,dir*max,MOVE.AIR_ACCEL*dt);this.player.body.setVelocityX(clamp(vx,-max,max))}if(this.jumpBuffer<=MOVE.BUFFER_MS&&this.coyote<=MOVE.COYOTE_MS){this.player.body.setVelocityY(MOVE.JUMP_V);this.jumpBuffer=9999;this.coyote=9999}if(jumpReleased&&this.player.body.velocity.y<MOVE.SHORT_CUTOFF)this.player.body.setVelocityY(MOVE.SHORT_CUTOFF);if(this.player.body.velocity.y>MOVE.FALL_MAX)this.player.body.setVelocityY(MOVE.FALL_MAX);return grounded}
+  readTouch(){const o={left:false,right:false,jump:false,action:false,wand:false};for(const p of this.input.manager.pointers){if(!p||!p.isDown)continue;for(const k of Object.keys(this.touchRects))if(Phaser.Geom.Rectangle.Contains(this.touchRects[k],p.x,p.y))o[k]=true}return o}
+  updateCombat(actionPressed,wandPressed){const run=activeRun();if(actionPressed){if(run.weapon==='gun')this.fireGun();else if(run.weapon==='machete')this.swingMachete()}if(wandPressed)this.useWand()}
+  updateRoom(){const sess=activeSession(),room=clamp(Math.floor(this.player.x/ROOM_W),0,4);if(room!==this.currentRoom){this.currentRoom=room;sess.room=room;this.saveSession(true);this.message(`ROOM ${room+1} · SESSION SAVED`,450)}}
+  saveSession(force){const now=this.time?this.time.now:0;if(!force&&now-this.lastSaveAt<650)return;const sess=activeSession(),run=activeRun();if(this.player&&this.player.body&&this.player.body.enable){sess.x=this.player.x;sess.y=this.player.y;sess.floor=run.floor;sess.room=this.currentRoom}setActiveSession(sess);writeStored();this.lastSaveAt=now}
+  togglePractice(){if(STORE.mode==='story'){this.saveSession(true);STORE.mode='practice';STORE.practiceRun=defaultRun();STORE.practiceRun.floor=1;STORE.practiceSession=defaultSession(STORE.practiceRun);this.message('PRACTICE MODE · STORY RUN PRESERVED',900);this.loadFloor(1,false)}else{this.saveSession(true);STORE.mode='story';STORE.practiceRun=null;STORE.practiceSession=null;this.message('RETURNED TO STORY RUN',800);this.loadFloor(STORE.storySession.floor,true)}writeStored()}
+  corruptPrimary(){this.saveSession(true);try{localStorage.setItem(SAVE_KEY,'{BROKEN SAVE');this.message('PRIMARY SAVE CORRUPTED · RELOAD PAGE TO TEST BACKUP',1200)}catch(e){}}
+  resetLabSave(){localStorage.removeItem(SAVE_KEY);localStorage.removeItem(BACKUP_KEY);STORE=defaultSave();writeStored();this.message('LAB SAVE RESET',650);this.loadFloor(1,false)}
+  updateHUD(time){const run=activeRun(),sess=activeSession(),max=FLOOR_HP[run.floor],ratio=clamp(sess.hp/max,0,1);this.hpFill.width=98*ratio;this.hpFill.setFillStyle(ratio>.55?0x75d56f:ratio>.25?0xe0c65b:0xe46f6f,1);this.hpText.setText(`${sess.hp}/${max}   ♥×${run.hearts}`);const weapon=run.weapon==='gun'?`GUN ${run.ammo}/20`:run.weapon==='machete'?'MACHETE':'UNARMED';const boots=run.bootsMs>0?`${(run.bootsMs/1000).toFixed(1)}s`:'—';this.stateText.setText(`${STORE.mode.toUpperCase()} · FLOOR ${run.floor} · ${run.checkpoint.id}\nPRIMARY ${weapon} · WAND ${run.hasWand?'READY':'—'} · BOOTS ${boots} · SPIRITS ${STORE.permanent.spirits.length} · RECORDS ${STORE.permanent.records.length}`);this.touchV.action.t.setText(run.weapon==='gun'?'FIRE':run.weapon==='machete'?'SLASH':'A');this.touchV.wand.r.setVisible(run.hasWand);this.touchV.wand.t.setVisible(run.hasWand);if(this.msg.visible&&time>=this.messageUntil)this.msg.setVisible(false);if(time<this.invulnUntil)this.player.setAlpha(Math.floor(time/70)%2?.35:1);else this.player.setAlpha(1);this.devPractice.setText(STORE.mode==='story'?'PRACTICE':'EXIT PRAC')}
+  updateTouchVisuals(){for(const k of ['left','right','action','jump','wand']){const v=this.touchV[k];if(!v)continue;const on=this.controls[k];v.r.setAlpha(on?.58:.28);v.r.setScale(on?.94:1);v.t.setScale(on?.94:1)}}
+  update(time,delta){if(!this.player||!this.player.body||!this.player.body.enable)return;const run=activeRun(),touch=this.readTouch();this.controls.left=this.keys.left.isDown||this.keys.leftA.isDown||touch.left;this.controls.right=this.keys.right.isDown||this.keys.rightD.isDown||touch.right;this.controls.jump=this.keys.jump.isDown||this.keys.jumpZ.isDown||touch.jump;this.controls.action=this.keys.action.isDown||touch.action;this.controls.wand=touch.wand||this.keys.wand.isDown;const jp=this.controls.jump&&!this.prev.jump,jr=!this.controls.jump&&this.prev.jump,ap=this.controls.action&&!this.prev.action,wp=this.controls.wand&&!this.prev.wand;this.prev={jump:this.controls.jump,action:this.controls.action,wand:this.controls.wand};const grounded=this.updateMovement(delta,jp,jr);this.updateCombat(ap,wp);this.handleCheckpoints();this.handleDamagePads(time);this.handleExit();this.updateRoom();if(run.bootsMs>0)run.bootsMs=Math.max(0,run.bootsMs-delta);this.bullets.getChildren().forEach(b=>{if(b.active&&time>(b.getData('expires')||0))b.destroy()});if(this.player.y>WORLD_H+35)this.respawnAtCheckpoint();const targetX=clamp(this.player.x-(this.lastFacing>0?146:238),0,WORLD_W-W),kx=1-Math.exp(-8*Math.min(delta,33.34)/1000);this.cameras.main.scrollX=Phaser.Math.Linear(this.cameras.main.scrollX,targetX,kx);this.updateTouchVisuals();this.updateHUD(time);this.saveSession(false)}
+}
+function pbRectBody(b){return b}
+function pbOverlap(a,b){if(!a||!b||a.enable===false||b.enable===false)return false;return !(a.right<=b.left||a.left>=b.right||a.bottom<=b.top||a.top>=b.bottom)}
+
+const config={type:Phaser.AUTO,parent:'game',width:W,height:H,backgroundColor:'#111a25',render:{pixelArt:true,antialias:false,roundPixels:true,powerPreference:'high-performance'},scale:{mode:Phaser.Scale.FIT,autoCenter:Phaser.Scale.CENTER_BOTH,width:W,height:H},physics:{default:'arcade',arcade:{gravity:{y:0},debug:false,fps:60}},fps:{target:60,forceSetTimeOut:false},scene:[SystemsLab]};
+const game=new Phaser.Game(config),rotateOverlay=document.getElementById('rotateOverlay'),resumeOverlay=document.getElementById('resumeOverlay');let backgroundPaused=false,sleeping=false;
+function sceneSave(){try{const s=game.scene.getScene('SystemsLab');if(s&&s.scene&&s.scene.isActive())s.saveSession(true)}catch(e){}writeStored()}
+function setSleep(v){if(!game||!game.loop)return;if(v&&!sleeping){game.loop.sleep();sleeping=true}else if(!v&&sleeping){game.loop.wake();sleeping=false}}
+function orientation(){const portrait=innerHeight>innerWidth;rotateOverlay.style.display=portrait?'flex':'none';if(portrait)setSleep(true);else if(!backgroundPaused)setSleep(false)}
+document.addEventListener('visibilitychange',()=>{if(document.hidden){sceneSave();backgroundPaused=true;setSleep(true)}else if(innerWidth>=innerHeight){resumeOverlay.style.display='flex'}});
+resumeOverlay.addEventListener('pointerdown',()=>{backgroundPaused=false;resumeOverlay.style.display='none';orientation()});window.addEventListener('beforeunload',sceneSave);window.addEventListener('resize',orientation);window.addEventListener('orientationchange',()=>setTimeout(orientation,120));orientation();
+})();
+</script>
+</body>
+</html>
