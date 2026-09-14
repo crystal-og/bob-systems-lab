@@ -6,7 +6,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#0b1018" />
-  <title>Bob: Ghost Hunter — Systems Lab v0.3.1</title>
+  <title>Bob: Ghost Hunter — Systems Lab v0.3.2</title>
   <style>
     html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#080c12}
     body{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;touch-action:none;overscroll-behavior:none}
@@ -115,7 +115,7 @@ class SystemsLab extends Phaser.Scene{
     this.createDamagePad(515,48,20);this.floorLabel(480,150,'DAMAGE PAD · 20 HP','#ffb3bd');this.createCheckpoint(735,'CP1',1,false);
     this.createPickup(945,175,'wand','wand','f1_wand',true);this.createPickup(1040,175,'spirit','spirit','spirit_f1',true);this.createPickup(1125,175,'record','record','record_f1',true);this.createCheckpoint(1225,'CP2',2,false);
     this.createPickup(1395,178,'boots','boots','f1_boots');this.createPickup(1490,178,'broccoli','broccoli','f1_broc');this.createPickup(1580,178,'heart','extraheart','f1_heart',true);this.createDamagePad(1640,48,20);
-    this.createCheckpoint(1740,'BOSS',3,true);this.createBossDummy(1900);this.floorLabel(1830,105,'BOSS DUMMY','#d7b6ff',9);this.exitZone=this.add.rectangle(2040,160,34,68,0x7dc8ff,.18).setStrokeStyle(2,0x9ee8ff,.8).setDepth(2);this.physics.add.existing(this.exitZone,true);this.floorLabel(1990,110,'FLOOR EXIT','#a9e9ff');
+    this.createPickup(1695,178,'gun','gun','f1_boss_gun');this.floorLabel(1650,145,'BOSS TEST GUN','#a9e9ff',7);this.createCheckpoint(1740,'BOSS',3,true);this.createBossDummy(1900);this.floorLabel(1818,100,'BOSS DUMMY · SHOOT OR SLASH','#d7b6ff',8);this.exitZone=this.add.rectangle(2040,160,34,68,0x7dc8ff,.18).setStrokeStyle(2,0x9ee8ff,.8).setDepth(2);this.physics.add.existing(this.exitZone,true);this.floorLabel(1990,110,'FLOOR EXIT','#a9e9ff');
   }
   buildFloor2(){
     this.floorLabel(14,62,'SIMULATED FLOOR 2 — PORTRAIT HALL · 150 MAX HP','#d9b4ff',9);this.floorLabel(20,100,'HP SHOULD BE 150 / 150');
@@ -129,7 +129,7 @@ class SystemsLab extends Phaser.Scene{
   createCheckpoint(x,id,order,boss){const visual=this.add.rectangle(x,166,14,42,0x4c78a8,.85).setDepth(4).setStrokeStyle(2,0x86b9ec,.9);const label=this.add.text(x-22,126,id,{fontFamily:'monospace',fontSize:'7px',color:'#9bc7ef'}).setDepth(5);const body=this.add.rectangle(x,165,24,54,0x000000,0);this.physics.add.existing(body,true);this.checkpoints.push({x,id,order,boss,visual,label,body});}
   syncCheckpointVisuals(){const run=activeRun();this.checkpoints.forEach(c=>{const active=run.checkpoint&&run.checkpoint.floor===run.floor&&run.checkpoint.order>=c.order;c.visual.setFillStyle(active?0xd6a94d:0x4c78a8,active?.95:.85);c.visual.setStrokeStyle(2,active?0xffe384:0x86b9ec,.95);c.label.setColor(active?'#ffe6a3':'#9bc7ef')})}
   createDamagePad(x,w,damage){const visual=this.add.rectangle(x,191,w,7,0xa74254,.9).setDepth(3);const body=this.add.rectangle(x,187,Math.max(18,w-6),12,0x000000,0);this.physics.add.existing(body,true);this.damagePads.push({visual,body,damage});}
-  createBossDummy(x){const defeated=STORE.permanent.bosses.includes('boss_f1');if(defeated)return;const d=this.physics.add.sprite(x,174,'dummy').setDepth(7);d.body.setSize(28,36);d.body.setOffset(3,3);d.setImmovable(true);d.body.setAllowGravity(false);d.setData('hp',100);d.setData('maxHp',100);d.setData('boss',true);this.targets.add(d);this.bossDummy=d;this.bossHpText=this.add.text(x-34,118,'DUMMY HP 100/100',{fontFamily:'monospace',fontSize:'7px',color:'#d9c3ef',backgroundColor:'#0d141ecc',padding:{x:3,y:2}}).setDepth(8);this.floorTexts.push(this.bossHpText)}
+  createBossDummy(x){const defeated=STORE.permanent.bosses.includes('boss_f1');if(defeated)return;const glow=this.add.rectangle(x,174,46,54,0x6c4c88,.28).setDepth(5).setStrokeStyle(2,0xd7b6ff,.95);const base=this.add.rectangle(x,197,38,5,0x3a294b,.95).setDepth(5);this.floorTexts.push(glow,base);const d=this.physics.add.sprite(x,174,'dummy').setDepth(7).setScale(1.15);d.body.setSize(28,36);d.body.setOffset(3,3);d.setImmovable(true);d.body.setAllowGravity(false);d.setData('hp',100);d.setData('maxHp',100);d.setData('boss',true);this.targets.add(d);this.bossDummy=d;this.bossHpText=this.add.text(x-40,118,'DUMMY HP 100/100',{fontFamily:'monospace',fontSize:'8px',color:'#f0dcff',backgroundColor:'#0d141eee',padding:{x:4,y:3}}).setDepth(8);this.floorTexts.push(this.bossHpText)}
   createTouchUI(){
     // Preserve the iPhone-validated smaller, rounded Combat Lab controls.
     // Invisible touch zones are slightly larger than the visible art.
